@@ -155,13 +155,13 @@ cmd /c ".github\skills\deskbox-ex-skill\scripts\pull.cmd --dry-run"
 
 布局：`scripts/pull.cmd`（纯 ASCII 启动器）→ `scripts/core/pull.ps1`（全部逻辑与中文文案）。
 
-- `pull.cmd` **必须保持纯 ASCII**。cmd.exe 按字节偏移定位脚本站、却按字符解码，含中文的 UTF-8 批处理会逐行错位——实测会导致后续命令丢掉开头字符（`echo   pull.cmd ...` 被执行成 `l.cmd ...`），把无关的 `for /f` 与 `git` 调用一起弄坏。因此所有中文只放 `pull.ps1`。
-- `scripts/core/pull.ps1` 必须以 **UTF-8 with BOM** 保存，PowerShell 5.1 才按 UTF-8 解析其中的中文。
-- 移动 `pull.ps1` 时同步改 `pull.cmd` 里的 `%~dp0core\pull.ps1`。
+- `pull.cmd` / `pub.cmd` **必须保持纯 ASCII**。cmd.exe 按字节偏移定位脚本站、却按字符解码，含中文的 UTF-8 批处理会逐行错位——实测会导致后续命令丢掉开头字符（`echo   pull.cmd ...` 被执行成 `l.cmd ...`），把无关的 `for /f` 与 `git` 调用一起弄坏。因此所有中文只放同名 `.ps1`。
+- `scripts/core/*.ps1` 必须以 **UTF-8 with BOM** 保存，PowerShell 5.1 才按 UTF-8 解析其中的中文。
+- 移动 `pull.ps1` / `pub.ps1` 时同步改对应 `.cmd` 里的 `%~dp0core\*.ps1`。
 - 仓库定位在 `Resolve-RepoRoot`（向上查找 `.git`）里，改了目录层级无需改它；但若把脚本整体移出仓库，脚本会明确报"找不到 git 仓库"而不是误操作别的仓库。
-- 两者都保持 CRLF 行尾。
+- 全部脚本保持 CRLF 行尾。
 
-### 3.2 手工等价命令
+### 3.2 上游同步的手工等价命令
 
 ```powershell
 # 首次
@@ -176,6 +176,36 @@ git merge upstream/main
 - 冲突处理顺序：上游文件以上游为准 → 本地定制挪到新增文件或 `docs/lijinfu/` → 只有行为确实需要时才保留本地改动的最小片段。
 - **合并后必须复核台账**：按 `docs/lijinfu/upstream-touchpoints.md` 逐条 `git diff`，确认上游没有静默覆盖本地改动（无冲突的静默覆盖不会报错）。
 - 合并后再跑一遍全量测试，确认契约钉值仍成立。
+
+### 3.3 打包安装包（pub.cmd，2026-10-27 实测）
+
+入口：[pub.cmd](./scripts/pub.cmd) → 逻辑在 [scripts/core/pub.ps1](./scripts/core/pub.ps1)。产物固定落在 `docs/lijinfu/installer/DeskBoxEx_Installer_<版本>.exe`（ARM64 为 `_arm64.exe`）。
+
+```powershell
+# 完整打包：AOT 零售发布 + Inno 编译
+.github\skills\deskbox-ex-skill\scripts\pub.cmd
+
+# 复用已有 AOT 载荷，只重编安装器
+.github\skills\deskbox-ex-skill\scripts\pub.cmd -SkipPublish
+
+# 缺 Inno Setup 6 时按当前用户安装
+.github\skills\deskbox-ex-skill\scripts\pub.cmd -InstallInnoSetup
+```
+
+它做的事（与发版链路同门禁）：
+
+1. 调 `scripts/publish-aot-retail.ps1 -Platform <arch>` 生成 Full Native AOT 载荷（`.artifacts/aot-retail/<rid>/publish`，约 392 个文件 / 131 MiB，10 分钟量级）
+2. `ISCC /DDeskBoxNativeAot=1 /DDeskBoxBundledRuntime=1 /DMyAppReleaseDir=<publish> /FDeskBox_Setup_<ver>_<arch> /O<staging> installer\DeskBox.iss`
+3. 改名复制到 `docs/lijinfu/installer/`，打印大小与 SHA-256
+
+要点：
+
+- **版本三处必须一致**：`src/DeskBox/DeskBox.csproj` 的 `<Version>`、`installer/DeskBox.iss` 的 `MyAppVersion`、`Package.appxmanifest` 的 `Version`。脚本先校验，不一致直接失败——不要用命令行覆盖版本号，那是发版动作。
+- 内置 Windows App Runtime 来自 AOT 载荷里的私有运行时 DLL（不是下载 msix），因此产物可完全离线安装。
+- 产物**未签名**，首次运行会有 SmartScreen 提示；正式发布走 `scripts/publish-aot-retail.ps1` + 签名流程。
+- `docs/lijinfu/installer/*.exe` 被仓库 `.gitignore` 的 `*.exe` 规则忽略，不会误进提交。
+- 需 Inno Setup 6（`winget install --id JRSoftware.InnoSetup --exact`，装到 `%LOCALAPPDATA%\Programs\Inno Setup 6`）。脚本会在 PATH、Program Files、LOCALAPPDATA 三处查找 `ISCC.exe`。
+- 退出码：`0` 成功、`1` 前置条件不满足、`2` AOT 发布失败、`3` Inno 编译失败。
 
 ## 硬规则四：本机构建与测试（2026-10-27 实测）
 
